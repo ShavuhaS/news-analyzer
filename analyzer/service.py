@@ -2,10 +2,18 @@ import spacy
 from typing import Dict, Any, List
 import logging
 from config import settings
+from analyzer.geocoders import GeoNamesUK
 
 logger = logging.getLogger(__name__)
 
 class NewsAnalyzer:
+    # Словник для виправлення проблемних абревіатур
+    LOCATION_ALIASES = {
+        "сша": "сполучені штати америки",
+        "рф": "росія",
+        "зсу": "україна", 
+    }
+
     def __init__(self):
         if settings.USE_GPU:
             try:
@@ -24,6 +32,8 @@ class NewsAnalyzer:
             logger.error(f"Failed to load spaCy model: {e}")
             raise
 
+        self.geocoder = GeoNamesUK(username=settings.GEONAMES_USERNAME)
+
     def analyze(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """
         Проводить повний аналіз новини: NER, Sentiment, Classification.
@@ -31,8 +41,8 @@ class NewsAnalyzer:
         text = f"{item.get('title', '')}\n{item.get('description', '')}"
         doc = self.nlp(text)
         
-        # 1. Знаходження локацій (NER)
-        locations = list(set([ent.text for ent in doc.ents if ent.label_ in ("LOC", "GPE")]))
+        # 1. Знаходження локацій (NER + Geocoding)
+        locations = self._get_locations(doc)
         
         # 2. Сентимент-аналіз (згідно з ТЗ на базі SenticNet)
         sentiment_score = self._analyze_sentiment(doc)
@@ -45,12 +55,41 @@ class NewsAnalyzer:
             "locations": locations,
             "sentiment_score": sentiment_score,
             "category": category,
-            "is_analyzed": True
         }
 
-    def _get_locations(self, doc) -> list[str]:
-        # TODO: Написати логіку знаходження географічних локацій у тексті
-        return []
+    def _get_locations(self, doc) -> List[Dict[str, Any]]:
+        """
+        Визначає локації в тексті, лематизує їх та геокодує через GeoNames.
+        Використовує словник абревіатур для покращення точності.
+        """
+        locations = []
+        processed_lemmas = set()
+
+        for ent in doc.ents:
+            if ent.label_ in ("LOC", "GPE"):
+                original_text = ent.text
+                lemma = ent.lemma_.lower().strip()
+
+                search_query = self.LOCATION_ALIASES.get(lemma, lemma)
+
+                if search_query in processed_lemmas:
+                    continue
+                
+                try:
+                    location = self.geocoder.geocode(search_query)
+                    if location:
+                        locations.append({
+                            "original_text": original_text,
+                            "lemma": lemma,
+                            "formatted_address": location.address,
+                            "lat": location.latitude,
+                            "lon": location.longitude
+                        })
+                        processed_lemmas.add(search_query)
+                except Exception as e:
+                    logger.error(f"Geocoding error for '{search_query}': {e}")
+        
+        return locations
 
     def _analyze_sentiment(self, doc) -> float:
         # TODO: Інтегрувати SenticNet
