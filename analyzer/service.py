@@ -3,6 +3,7 @@ from typing import Dict, Any, List
 import logging
 from config import settings
 from analyzer.geocoders import GeoNamesUK
+from senticnet import senticnet
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +12,18 @@ class NewsAnalyzer:
     LOCATION_ALIASES = {
         "сша": "сполучені штати америки",
         "рф": "росія",
+        "єс": "європейський союз",
+        "оон": "організація об'єднаних націй",
         "зсу": "україна", 
     }
+    KNOWN_LOCATION_ERRORS = {
+        'кий': 'київ',
+    }
+
+    # Слова-підсилювачі емоцій
+    INTENSIFIERS = {"дуже", "надзвичайно", "вкрай", "абсолютно", "вельми", "занадто"}
+    # Частки заперечення
+    NEGATIONS = {"не", "ні", "ані"}
 
     def __init__(self):
         if settings.USE_GPU:
@@ -38,14 +49,18 @@ class NewsAnalyzer:
         """
         Проводить повний аналіз новини: NER, Sentiment, Classification.
         """
-        text = f"{item.get('title', '')}\n{item.get('description', '')}"
+        title = item.get('title', '')
+        description = item.get('description', '')
+        
+        # Об'єднаний текст для NER та класифікації
+        text = f"{title}\n{description}"
         doc = self.nlp(text)
         
         # 1. Знаходження локацій (NER + Geocoding)
         locations = self._get_locations(doc)
         
-        # 2. Сентимент-аналіз (згідно з ТЗ на базі SenticNet)
-        sentiment_score = self._analyze_sentiment(doc)
+        # 2. Сентимент-аналіз (з урахуванням ваги заголовка)
+        sentiment_score = self._analyze_sentiment(title, description)
         
         # 3. Категоризація (класифікація)
         category = self._classify_category(doc)
@@ -69,6 +84,7 @@ class NewsAnalyzer:
             if ent.label_ in ("LOC", "GPE"):
                 original_text = ent.text
                 lemma = ent.lemma_.lower().strip()
+                lemma = self.KNOWN_LOCATION_ERRORS.get(lemma, lemma)
 
                 search_query = self.LOCATION_ALIASES.get(lemma, lemma)
 
@@ -91,9 +107,67 @@ class NewsAnalyzer:
         
         return locations
 
-    def _analyze_sentiment(self, doc) -> float:
-        # TODO: Інтегрувати SenticNet
-        return 0.0
+    def _process_tokens_for_sentiment(self, doc, weight_multiplier: float) -> tuple[float, float]:
+        """
+        Обробляє токени документа, повертає сумарну полярність та сумарну вагу знайдених слів.
+        """
+        polarity_sum = 0.0
+        weight_sum = 0.0
+        allowed_pos = {"ADJ", "VERB", "ADV", "NOUN"}
+
+        for token in doc:
+            if token.is_stop or token.is_punct or token.pos_ not in allowed_pos or token.ent_type_:
+                continue
+
+            lemma = token.lemma_.lower().strip()
+
+            if lemma in senticnet:
+                base_polarity = float(senticnet[lemma][7])
+                
+                modifier = 1.0
+                for child in token.children:
+                    child_lemma = child.lemma_.lower().strip()
+                    
+                    if child_lemma in self.NEGATIONS and child.dep_ in ("advmod", "neg"):
+                        modifier *= -1.0
+                    elif child_lemma in self.INTENSIFIERS and child.dep_ == "advmod":
+                        modifier *= 1.25
+
+                final_polarity = base_polarity * modifier * weight_multiplier
+                
+                polarity_sum += final_polarity
+                weight_sum += weight_multiplier
+
+        return polarity_sum, weight_sum
+
+    def _analyze_sentiment(self, title: str, description: str) -> float:
+        """
+        Обчислює загальний сентимент новини. Заголовок має більшу вагу.
+        """
+        total_polarity = 0.0
+        total_weight = 0.0
+
+        if title:
+            title_doc = self.nlp(title)
+            p_sum, w_sum = self._process_tokens_for_sentiment(title_doc, weight_multiplier=1.5)
+            total_polarity += p_sum
+            total_weight += w_sum
+
+        if description:
+            desc_doc = self.nlp(description)
+            p_sum, w_sum = self._process_tokens_for_sentiment(desc_doc, weight_multiplier=1.0)
+            total_polarity += p_sum
+            total_weight += w_sum
+
+        if total_weight == 0:
+            return 0.0
+
+        average_polarity = total_polarity / total_weight
+        
+        # Обмежуємо значення діапазоном [-1.0, 1.0]
+        average_polarity = max(-1.0, min(1.0, average_polarity))
+
+        return round(average_polarity, 3)
 
     def _classify_category(self, doc) -> str:
         # TODO: Додати навчену модель (Naive Bayes)
