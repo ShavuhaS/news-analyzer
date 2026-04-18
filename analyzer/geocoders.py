@@ -1,10 +1,15 @@
 from geopy.geocoders import GeoNames
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+from functools import lru_cache
 
 class GeoNamesUK(GeoNames):
     """
-    Custom GeoNames adapter that forces Ukrainian language support.
+    Custom GeoNames adapter that forces Ukrainian language support and caches results.
     """
+    def __init__(self, *args, cache_size=1000, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.geocode = lru_cache(maxsize=cache_size)(self.geocode)
+
     def _call_geocoder(self, url, *args, **kwargs):
         url_parts = list(urlparse(url))
         query = dict(parse_qsl(url_parts[4]))

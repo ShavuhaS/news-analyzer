@@ -46,7 +46,10 @@ class NewsAnalyzer:
             logger.error(f"Failed to load spaCy model: {e}")
             raise
 
-        self.geocoder = GeoNamesUK(username=settings.GEONAMES_USERNAME)
+        self.geocoder = GeoNamesUK(
+            username=settings.GEONAMES_USERNAME,
+            cache_size=settings.GEOCODER_CACHE_SIZE
+        )
         
         # Завантаження моделі класифікації
         model_path = os.path.join(os.path.dirname(__file__), "..", "news_categorization_model.joblib")

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     
     # Geocoding settings
     GEONAMES_USERNAME: str = Field(default="demo", env="GEONAMES_USERNAME")
+    GEOCODER_CACHE_SIZE: int = Field(default=1000, env="GEOCODER_CACHE_SIZE")
     
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
