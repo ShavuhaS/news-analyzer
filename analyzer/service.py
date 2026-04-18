@@ -1,8 +1,11 @@
 import spacy
 from typing import Dict, Any, List
 import logging
+import os
+import joblib
 from config import settings
 from analyzer.geocoders import GeoNamesUK
+from analyzer.preprocessing import html_sanitize
 from senticnet import senticnet
 
 logger = logging.getLogger(__name__)
@@ -44,13 +47,26 @@ class NewsAnalyzer:
             raise
 
         self.geocoder = GeoNamesUK(username=settings.GEONAMES_USERNAME)
+        
+        # Завантаження моделі класифікації
+        model_path = os.path.join(os.path.dirname(__file__), "..", "news_categorization_model.joblib")
+        if os.path.exists(model_path):
+            try:
+                self.model = joblib.load(model_path)
+                logger.info(f"Loaded categorization model from {model_path}")
+            except Exception as e:
+                logger.error(f"Failed to load categorization model: {e}")
+                self.model = None
+        else:
+            logger.warning(f"Categorization model not found at {model_path}")
+            self.model = None
 
     def analyze(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """
         Проводить повний аналіз новини: NER, Sentiment, Classification.
         """
-        title = item.get('title', '')
-        description = item.get('description', '')
+        title = html_sanitize(item.get('title', ''))
+        description = html_sanitize(item.get('description', ''))
         
         # Об'єднаний текст для NER та класифікації
         text = f"{title}\n{description}"
@@ -67,6 +83,8 @@ class NewsAnalyzer:
         
         return {
             **item,
+            "title": title,
+            "description": description,
             "locations": locations,
             "sentiment_score": sentiment_score,
             "category": category,
@@ -122,6 +140,7 @@ class NewsAnalyzer:
             lemma = token.lemma_.lower().strip()
 
             if lemma in senticnet:
+                # Поле 7 — це polarity_value
                 base_polarity = float(senticnet[lemma][7])
                 
                 modifier = 1.0
@@ -163,12 +182,21 @@ class NewsAnalyzer:
             return 0.0
 
         average_polarity = total_polarity / total_weight
-        
-        # Обмежуємо значення діапазоном [-1.0, 1.0]
         average_polarity = max(-1.0, min(1.0, average_polarity))
 
         return round(average_polarity, 3)
 
     def _classify_category(self, doc) -> str:
-        # TODO: Додати навчену модель (Naive Bayes)
-        return "Загальні"
+        """
+        Класифікує новину за категоріями за допомогою навченої моделі.
+        """
+        if not self.model:
+            return "Загальні"
+        
+        try:
+            # Модель очікує список текстів. Використовуємо doc.text.
+            prediction = self.model.predict([doc.text])
+            return str(prediction[0])
+        except Exception as e:
+            logger.error(f"Classification error: {e}")
+            return "Загальні"
