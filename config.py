@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     GEONAMES_USERNAME: str = Field(default="demo", env="GEONAMES_USERNAME")
     GEOCODER_CACHE_SIZE: int = Field(default=1000, env="GEOCODER_CACHE_SIZE")
     
+    # Logging settings
+    LOG_INTERVAL_SEC: int = Field(default=60, env="LOG_INTERVAL_SEC")
+    
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings()
